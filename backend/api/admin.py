@@ -166,6 +166,7 @@ class ProduitAdmin(admin.ModelAdmin):
     seller_name.admin_order_field = 'seller__nom'
 
 
+   
     def prix_display(self, obj):
         try:
             prix = to_float(obj.prix)
@@ -174,17 +175,17 @@ class ProduitAdmin(admin.ModelAdmin):
             if reduction > 0:
                 prix_red = to_float(obj.prix_avec_reduction)
                 return format_html(
-                    '<span style="text-decoration: line-through; color: #999;">{:.2f} €</span> '
-                    '<strong style="color: #e74c3c;">{:.2f} €</strong> '
-                    '<span style="color: #27ae60;">(-{:.0f}%)</span>',
-                    prix, prix_red, reduction
+                    '<span style="text-decoration: line-through;">{} FCFA</span> '
+                    '<strong>{} FCFA</strong> '
+                    '(-{}%)',
+                    f'{prix:.2f}', f'{prix_red:.2f}', f'{reduction:.0f}'
                 )
             else:
-                return format_html('{:.2f} €', prix)
+                return format_html('{} FCFA', f'{prix:.2f}')
         except Exception as e:
             return f'Erreur prix: {str(e)}'
-    prix_display.short_description = 'Prix'
 
+    prix_display.short_description = 'Prix'
 
     def prix_avec_reduction_display(self, obj):
         try:
@@ -193,12 +194,14 @@ class ProduitAdmin(admin.ModelAdmin):
             
             if reduction > 0:
                 prix_red = to_float(obj.prix_avec_reduction)
-                return format_html('{:.2f} € (prix réduit)', prix_red)
+                return format_html('{} FCFA (prix réduit)', f'{prix_red:.2f}')
             else:
-                return format_html('{:.2f} € (prix normal)', prix)
+                return format_html('{} FCFA (prix normal)', f'{prix:.2f}')
         except Exception as e:
             return f'Erreur prix: {str(e)}'
+
     prix_avec_reduction_display.short_description = 'Prix final'
+
 
     def image_preview(self, obj):
         if obj.image_url:

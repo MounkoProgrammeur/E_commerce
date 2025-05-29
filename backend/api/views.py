@@ -25,27 +25,39 @@ class StandardResultsSetPagination(PageNumberPagination):
     max_page_size = 100
 
 # ===========================================
+# FONCTIONS UTILITAIRES
+# ===========================================
+
+def handle_exception(exception, message, logger_instance=logger):
+    """Fonction utilitaire pour gérer les exceptions de manière consistante"""
+    logger_instance.error(f"{message}: {str(exception)}")
+    return Response({
+        'error': message,
+        'details': str(exception)
+    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+def paginate_queryset(queryset, request, paginator_class=StandardResultsSetPagination):
+    """Fonction utilitaire pour paginer les querysets"""
+    paginator = paginator_class()
+    result_page = paginator.paginate_queryset(queryset, request)
+    return paginator, result_page
+
+# ===========================================
 # ENDPOINTS FRONTEND (publics)
 # ===========================================
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def api_produits(request):
+    """Endpoint principal pour les produits vérifiés"""
     try:
         produits = Produit.objects.filter(status='verified').order_by('-created_at')
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
+        paginator, result_page = paginate_queryset(produits, request)
         serializer = ProduitSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
     except Exception as e:
-        logger.error(f"Erreur dans api_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des produits',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération des produits')
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -57,6 +69,7 @@ def recherche_produits(request, text):
             status='verified'
         ).distinct()
         
+        # Recherche par préfixe si aucun résultat et texte >= 4 caractères
         if not produits.exists() and len(text) >= 4:
             prefix = text[:4]
             produits = Produit.objects.filter(
@@ -71,16 +84,14 @@ def recherche_produits(request, text):
         })
     
     except Exception as e:
-        logger.error(f"Erreur dans recherche_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la recherche',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la recherche')
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def nombre_total_produits(request):
+    """Statistiques générales publiques"""
     try:
-        total = Produit.objects.count()  # Compte tous les produits
+        total = Produit.objects.count()
         total_verifies = Produit.objects.filter(status='verified').count()
         total_sellers = Seller.objects.filter(status='verified').count()
         return Response({
@@ -90,11 +101,8 @@ def nombre_total_produits(request):
             'message': f'Total: {total} produits ({total_verifies} vérifiés), {total_sellers} vendeurs vérifiés'
         })
     except Exception as e:
-        logger.error(f"Erreur dans nombre_total_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors du comptage',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors du comptage')
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def produits_par_categorie(request, nom_categorie):
@@ -112,71 +120,57 @@ def produits_par_categorie(request, nom_categorie):
             status='verified'
         ).order_by('-created_at')
         
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
+        paginator, result_page = paginate_queryset(produits, request)
         serializer = ProduitSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
     except Exception as e:
-        logger.error(f"Erreur dans produits_par_categorie: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération par catégorie',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération par catégorie')
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def trier_produits(request):
     """Endpoint GET /trie/ avec paramètres de requête"""
     try:
-        couleur = request.GET.get('couleur')
-        prix_min = request.GET.get('prix_min')
-        prix_max = request.GET.get('prix_max')
-        taille = request.GET.get('taille')
-        categorie = request.GET.get('categorie')
-        
         produits = Produit.objects.filter(status='verified')
         
-        if couleur:
-            produits = produits.filter(couleur__icontains=couleur)
+        # Filtrage par paramètres
+        filters = {
+            'couleur': request.GET.get('couleur'),
+            'taille': request.GET.get('taille'),
+            'categorie': request.GET.get('categorie'),
+        }
         
-        if prix_min:
-            try:
-                produits = produits.filter(prix__gte=float(prix_min))
-            except ValueError:
-                pass
+        for field, value in filters.items():
+            if value:
+                if field in ['couleur', 'taille']:
+                    produits = produits.filter(**{f"{field}__icontains": value})
+                else:
+                    produits = produits.filter(**{field: value})
         
-        if prix_max:
-            try:
-                produits = produits.filter(prix__lte=float(prix_max))
-            except ValueError:
-                pass
+        # Filtrage par prix
+        for prix_param, operator in [('prix_min', 'gte'), ('prix_max', 'lte')]:
+            prix_value = request.GET.get(prix_param)
+            if prix_value:
+                try:
+                    produits = produits.filter(**{f"prix__{operator}": float(prix_value)})
+                except ValueError:
+                    pass
         
-        if taille:
-            produits = produits.filter(taille__icontains=taille)
-        
-        if categorie:
-            produits = produits.filter(categorie=categorie)
-        
+        # Tri
         ordre = request.GET.get('ordre', '-created_at')
-        if ordre in ['prix', '-prix', 'nom', '-nom', 'created_at', '-created_at']:
+        ordres_valides = ['prix', '-prix', 'nom', '-nom', 'created_at', '-created_at']
+        if ordre in ordres_valides:
             produits = produits.order_by(ordre)
         else:
             produits = produits.order_by('-created_at')
         
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
+        paginator, result_page = paginate_queryset(produits, request)
         serializer = ProduitSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
     except Exception as e:
-        logger.error(f"Erreur dans trier_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors du tri',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors du tri')
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -196,7 +190,6 @@ def actualiser_produits(request):
             produits = produits.exclude(id__in=ids_exclus)
         
         produits = produits.order_by('?')[:30]
-        
         serializer = ProduitSerializer(produits, many=True)
         return Response({
             'count': len(serializer.data),
@@ -204,11 +197,8 @@ def actualiser_produits(request):
         })
     
     except Exception as e:
-        logger.error(f"Erreur dans actualiser_produits: {str(e)}")
-        return Response({
-            'error': "Erreur lors de l'actualisation",
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, "Erreur lors de l'actualisation")
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def details_produit(request, produit_id):
@@ -220,49 +210,93 @@ def details_produit(request, produit_id):
     except Http404:
         return Response({'error': 'Produit non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans details_produit: {str(e)}")
-        return Response({'error': 'Erreur lors de la récupération du produit', 'details': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération du produit')
 
 # ===========================================
-# ENDPOINTS ADMINISTRATION - VENDEURS
+# ENDPOINTS VENDEURS
 # ===========================================
 
 @api_view(['GET'])
-@permission_classes([AllowAny])  # Accessible à tous, car les vendeurs peuvent voir leurs propres produits
-def seller_produits(request, id):
-    """Endpoint GET /sellerProduits/{id}/ - Produits d'un vendeur"""
+@permission_classes([AllowAny])
+def detail_seller(request, seller_id):
+    """Endpoint GET /seller/{seller_id}/ - Détails d'un vendeur"""
     try:
-        seller = get_object_or_404(Seller, id=id)
-        produits = seller.produits.all().order_by('-created_at')
+        seller = get_object_or_404(Seller, id=seller_id)
+        serializer = SellerSerializer(seller)
+        return Response(serializer.data)
+    except Http404:
+        return Response({'error': 'Vendeur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return handle_exception(e, 'Erreur lors de la récupération du vendeur')
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def produits_seller(request, seller_id):
+    """
+    Endpoint unifié pour récupérer les produits d'un vendeur
+    GET /seller/{seller_id}/produits/ ou /sellerProduits/{seller_id}/
+    """
+    try:
+        seller = get_object_or_404(Seller, id=seller_id)
         
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
+        # Pour les vendeurs connectés ou admins : tous les produits
+        # Pour le public : seulement les produits vérifiés
+        if request.user.is_authenticated and (
+            request.user.is_staff or 
+            (hasattr(request.user, 'seller') and request.user.seller.id == seller_id)
+        ):
+            produits = seller.produits.all().order_by('-created_at')
+        else:
+            produits = seller.produits.filter(status='verified').order_by('-created_at')
         
+        paginator, result_page = paginate_queryset(produits, request)
         serializer = ProduitSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
     except Http404:
-        return Response({
-            'error': 'Vendeur non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Vendeur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans seller_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des produits du vendeur',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération des produits du vendeur')
+
+# Alias pour compatibilité avec l'ancienne URL
+seller_produits = produits_seller
+
+# ===========================================
+# ENDPOINTS PRODUITS - CRUD UNIFIÉ
+# ===========================================
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def liste_produits(request):
+    """Endpoint GET /produits/ - Liste de tous les produits (avec filtrage par statut)"""
+    try:
+        # Filtrage par statut selon les permissions
+        if request.user.is_staff:
+            produits = Produit.objects.all()
+        else:
+            produits = Produit.objects.filter(status='verified')
+        
+        produits = produits.order_by('-created_at')
+        paginator, result_page = paginate_queryset(produits, request)
+        serializer = ProduitSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+    
+    except Exception as e:
+        return handle_exception(e, 'Erreur lors de la récupération des produits')
 
 @api_view(['GET', 'POST'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
-def ajouter_produit(request):
-    """Endpoint GET/POST /ajouterLesProduits/ - Afficher le formulaire ou créer un produit"""
+@permission_classes([IsAdminUser])
+def gestion_produit(request):
+    """
+    Endpoint unifié pour la gestion des produits
+    GET/POST /produits/create/ ou /ajouterLesProduits/
+    """
     try:
         if request.method == 'GET':
             categories = dict(Produit.CATEGORIE_CHOICES) if hasattr(Produit, 'CATEGORIE_CHOICES') else {}
             return Response({
-                'message': 'Formulaire d\'ajout de produit',
+                'message': 'Formulaire de gestion de produit',
                 'categories_disponibles': categories,
-                'endpoint': 'POST /ajouterLesProduits/',
                 'champs_requis': [
                     'nom', 'description', 'prix', 'categorie', 
                     'seller_id', 'couleur', 'taille', 'tags'
@@ -270,8 +304,7 @@ def ajouter_produit(request):
             })
         
         elif request.method == 'POST':
-            # Logique de création existante
-            logger.info(f"Requête ajouter_produit par {request.user}: {request.data}")
+            logger.info(f"Requête création produit par {request.user}: {request.data}")
             serializer = ProduitCreateSerializer(data=request.data)
             if serializer.is_valid():
                 produit = serializer.save()
@@ -279,22 +312,22 @@ def ajouter_produit(request):
                 logger.info(f"Produit créé: {produit.nom}")
                 return Response(response_serializer.data, status=status.HTTP_201_CREATED)
             
-            logger.error(f"Erreurs de validation dans ajouter_produit: {serializer.errors}")
+            logger.error(f"Erreurs de validation: {serializer.errors}")
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     except Exception as e:
-        logger.error(f"Erreur dans ajouter_produit: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la création du produit',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la gestion du produit')
+
+# Alias pour compatibilité
+ajouter_produit = gestion_produit
+creer_produit = gestion_produit
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAdminUser])
 def modifier_produit(request, produit_id):
     """Endpoint PUT/PATCH /produits/<produit_id>/update/"""
     try:
-        logger.info(f"Requête modifier_produit par {request.user} pour produit {produit_id}: {request.data}")
+        logger.info(f"Requête modification produit par {request.user} pour produit {produit_id}: {request.data}")
         produit = get_object_or_404(Produit, id=produit_id)
         serializer = ProduitCreateSerializer(produit, data=request.data, partial=True)
         if serializer.is_valid():
@@ -302,20 +335,19 @@ def modifier_produit(request, produit_id):
             response_serializer = ProduitSerializer(produit_updated)
             logger.info(f"Produit modifié: {produit_updated.nom}")
             return Response(response_serializer.data)
-        logger.error(f"Erreurs de validation dans modifier_produit: {serializer.errors}")
+        logger.error(f"Erreurs de validation: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     except Http404:
         return Response({'error': 'Produit non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans modifier_produit: {str(e)}")
-        return Response({'error': 'Erreur lors de la modification du produit', 'details': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la modification du produit')
 
 @api_view(['DELETE'])
 @permission_classes([IsAdminUser])
 def supprimer_produit(request, produit_id):
     """Endpoint DELETE /produits/<produit_id>/delete/"""
     try:
-        logger.info(f"Requête supprimer_produit par {request.user} pour produit {produit_id}")
+        logger.info(f"Requête suppression produit par {request.user} pour produit {produit_id}")
         produit = get_object_or_404(Produit, id=produit_id)
         nom_produit = produit.nom
         produit.delete()
@@ -324,43 +356,33 @@ def supprimer_produit(request, produit_id):
     except Http404:
         return Response({'error': 'Produit non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans supprimer_produit: {str(e)}")
-        return Response({'error': 'Erreur lors de la suppression du produit', 'details': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        return handle_exception(e, 'Erreur lors de la suppression du produit')
 
 # ===========================================
-# ENDPOINTS ADMINISTRATION - ADMINISTRATEUR
+# ENDPOINTS ADMINISTRATION
 # ===========================================
 
 @api_view(['GET'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
+@permission_classes([IsAdminUser])
 def produits_non_verifies(request):
     """Endpoint GET /produits-non-verifies/ - Produits non vérifiés"""
     try:
         logger.info(f"Requête produits_non_verifies par {request.user}")
         produits = Produit.objects.filter(status='unverified').order_by('-created_at')
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
+        paginator, result_page = paginate_queryset(produits, request)
         serializer = ProduitSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
     except Exception as e:
-        logger.error(f"Erreur dans produits_non_verifies: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des produits non vérifiés',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération des produits non vérifiés')
 
 @api_view(['PUT', 'PATCH'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
+@permission_classes([IsAdminUser])
 def verifier_produit(request, id):
     """Endpoint PUT/PATCH /verifier-produit/{id}/ - Vérifier un produit"""
     try:
         logger.info(f"Requête verifier_produit par {request.user} pour produit {id}")
         produit = get_object_or_404(Produit, id=id)
-        
         produit.status = 'verified'
         produit.save()
         
@@ -372,76 +394,74 @@ def verifier_produit(request, id):
         })
     
     except Http404:
-        return Response({
-            'error': 'Produit non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Produit non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans verifier_produit: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la vérification du produit',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-# ===========================================
-# FONCTIONS MANQUANTES POUR LES URLs
-# ===========================================
+        return handle_exception(e, 'Erreur lors de la vérification du produit')
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
-def detail_seller(request, seller_id):
-    """Endpoint GET /seller/{seller_id}/ - Détails d'un vendeur"""
+@permission_classes([IsAdminUser])
+def liste_sellers(request):
+    """Endpoint GET /sellers/ - Liste des vendeurs"""
     try:
-        seller = get_object_or_404(Seller, id=seller_id)
-        serializer = SellerSerializer(seller)
-        return Response(serializer.data)
-    
-    except Http404:
-        return Response({
-            'error': 'Vendeur non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        logger.error(f"Erreur dans detail_seller: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération du vendeur',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def produits_seller(request, seller_id):
-    """Endpoint GET /seller/{seller_id}/produits/ - Produits d'un vendeur"""
-    try:
-        seller = get_object_or_404(Seller, id=seller_id)
-        produits = seller.produits.filter(status='verified').order_by('-created_at')
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
-        serializer = ProduitSerializer(result_page, many=True)
+        logger.info(f"Requête liste_sellers par {request.user}")
+        sellers = Seller.objects.all().order_by('-start')
+        paginator, result_page = paginate_queryset(sellers, request)
+        serializer = SellerSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
     
-    except Http404:
-        return Response({
-            'error': 'Vendeur non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans produits_seller: {str(e)}")
+        return handle_exception(e, 'Erreur lors de la récupération des vendeurs')
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAdminUser])
+def verifier_seller(request, seller_id):
+    """Endpoint PUT/PATCH /sellers/{seller_id}/verify/ - Vérifier un vendeur"""
+    try:
+        logger.info(f"Requête verifier_seller par {request.user} pour vendeur {seller_id}")
+        seller = get_object_or_404(Seller, id=seller_id)
+        seller.status = 'verified'
+        seller.save()
+        
+        serializer = SellerSerializer(seller)
+        logger.info(f"Vendeur vérifié: {seller.nom}")
         return Response({
-            'error': 'Erreur lors de la récupération des produits du vendeur',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            'message': f'Vendeur "{seller.nom}" vérifié avec succès',
+            'seller': serializer.data
+        })
+    
+    except Http404:
+        return Response({'error': 'Vendeur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return handle_exception(e, 'Erreur lors de la vérification du vendeur')
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def liste_clients(request):
+    """Endpoint GET /clients/ - Liste des clients"""
+    try:
+        logger.info(f"Requête liste_clients par {request.user}")
+        clients = Client.objects.all().order_by('-created_at')
+        paginator, result_page = paginate_queryset(clients, request)
+        serializer = ClientSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+    
+    except Exception as e:
+        return handle_exception(e, 'Erreur lors de la récupération des clients')
+
+# ===========================================
+# ENDPOINTS AUTHENTIFICATION
+# ===========================================
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_user(request):
     """Endpoint POST /auth/login/ - Connexion utilisateur"""
     try:
-        logger.info(f"Requête login_user: {request.data}")
+        logger.info(f"Tentative de connexion: {request.data.get('username', 'N/A')}")
         username = request.data.get('username')
         password = request.data.get('password')
         
         if not username or not password:
-            logger.error("Username ou password manquant")
             return Response({
                 'error': 'Username et password requis'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -462,11 +482,7 @@ def login_user(request):
             }, status=status.HTTP_401_UNAUTHORIZED)
     
     except Exception as e:
-        logger.error(f"Erreur dans login_user: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la connexion',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la connexion')
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -474,23 +490,16 @@ def logout_user(request):
     """Endpoint POST /auth/logout/ - Déconnexion utilisateur"""
     try:
         logger.info(f"Déconnexion de {request.user}")
-        return Response({
-            'message': 'Déconnexion réussie'
-        })
-    
+        return Response({'message': 'Déconnexion réussie'})
     except Exception as e:
-        logger.error(f"Erreur dans logout_user: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la déconnexion',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la déconnexion')
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_seller(request):
     """Endpoint POST /auth/register/seller/ - Inscription vendeur"""
     try:
-        logger.info(f"Requête register_seller: {request.data}")
+        logger.info(f"Requête inscription vendeur: {request.data.get('nom', 'N/A')}")
         serializer = SellerCreateSerializer(data=request.data)
         if serializer.is_valid():
             seller = serializer.save()
@@ -498,22 +507,18 @@ def register_seller(request):
             logger.info(f"Vendeur créé: {seller.nom}")
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         
-        logger.error(f"Erreurs de validation dans register_seller: {serializer.errors}")
+        logger.error(f"Erreurs de validation inscription vendeur: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     except Exception as e:
-        logger.error(f"Erreur dans register_seller: {str(e)}")
-        return Response({
-            'error': "Erreur lors de l'inscription du vendeur",
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, "Erreur lors de l'inscription du vendeur")
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_client(request):
     """Endpoint POST /auth/register/client/ - Inscription client"""
     try:
-        logger.info(f"Requête register_client: {request.data}")
+        logger.info(f"Requête inscription client: {request.data.get('email', 'N/A')}")
         serializer = ClientCreateSerializer(data=request.data)
         if serializer.is_valid():
             client = serializer.save()
@@ -521,154 +526,23 @@ def register_client(request):
             logger.info(f"Client créé: {client.user.email}")
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         
-        logger.error(f"Erreurs de validation dans register_client: {serializer.errors}")
+        logger.error(f"Erreurs de validation inscription client: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     except Exception as e:
-        logger.error(f"Erreur dans register_client: {str(e)}")
-        return Response({
-            'error': "Erreur lors de l'inscription du client",
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, "Erreur lors de l'inscription du client")
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def liste_produits(request):
-    """Endpoint GET /produits/ - Liste de tous les produits"""
-    try:
-        produits = Produit.objects.all().order_by('-created_at')
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(produits, request)
-        
-        serializer = ProduitSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-    
-    except Exception as e:
-        logger.error(f"Erreur dans liste_produits: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des produits',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# ...existing code...
-
-@api_view(['GET', 'POST'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
-def creer_produit(request):
-    """Endpoint GET/POST /produits/create/ - Afficher le formulaire ou créer un produit"""
-    try:
-        if request.method == 'GET':
-            categories = dict(Produit.CATEGORIE_CHOICES) if hasattr(Produit, 'CATEGORIE_CHOICES') else {}
-            return Response({
-                'message': 'Formulaire de création de produit',
-                'categories_disponibles': categories,
-                'endpoint': 'POST /produits/create/',
-                'champs_requis': [
-                    'nom', 'description', 'prix', 'categorie', 
-                    'seller_id', 'couleur', 'taille', 'tags'
-                ]
-            })
-        
-        elif request.method == 'POST':
-            logger.info(f"Requête creer_produit par {request.user}: {request.data}")
-            serializer = ProduitCreateSerializer(data=request.data)
-            if serializer.is_valid():
-                produit = serializer.save()
-                response_serializer = ProduitSerializer(produit)
-                logger.info(f"Produit créé: {produit.nom}")
-                return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-            
-            logger.error(f"Erreurs de validation dans creer_produit: {serializer.errors}")
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    except Exception as e:
-        logger.error(f"Erreur dans creer_produit: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la création du produit',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-# ...existing code...
-
-@api_view(['GET'])
-@permission_classes([IsAdminUser])  # ou AllowAny selon ton besoin
-def liste_sellers(request):
-    try:
-        logger.info(f"Requête liste_sellers par {request.user}")
-        sellers = Seller.objects.all().order_by('-start')  # Remplace '-created_at' par '-start'
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(sellers, request)
-        
-        serializer = SellerSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-    
-    except Exception as e:
-        logger.error(f"Erreur dans liste_sellers: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des vendeurs',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-@api_view(['PUT', 'PATCH'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
-def verifier_seller(request, seller_id):
-    """Endpoint PUT/PATCH /sellers/{seller_id}/verify/ - Vérifier un vendeur"""
-    try:
-        logger.info(f"Requête verifier_seller par {request.user} pour vendeur {seller_id}")
-        seller = get_object_or_404(Seller, id=seller_id)
-        seller.status = 'verified'
-        seller.save()
-        
-        serializer = SellerSerializer(seller)
-        logger.info(f"Vendeur vérifié: {seller.nom}")
-        return Response({
-            'message': f'Vendeur "{seller.nom}" vérifié avec succès',
-            'seller': serializer.data
-        })
-    
-    except Http404:
-        return Response({
-            'error': 'Vendeur non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        logger.error(f"Erreur dans verifier_seller: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la vérification du vendeur',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['GET'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
-def liste_clients(request):
-    """Endpoint GET /clients/ - Liste des clients"""
-    try:
-        logger.info(f"Requête liste_clients par {request.user}")
-        clients = Client.objects.all().order_by('-created_at')
-        
-        paginator = StandardResultsSetPagination()
-        result_page = paginator.paginate_queryset(clients, request)
-        
-        serializer = ClientSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-    
-    except Exception as e:
-        logger.error(f"Erreur dans liste_clients: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des clients',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+# ===========================================
+# ENDPOINTS UTILITAIRES
+# ===========================================
 
 @api_view(['POST'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
+@permission_classes([IsAdminUser])
 def upload_image(request):
     """Endpoint POST /upload/image/ - Upload d'image"""
     try:
         logger.info(f"Requête upload_image par {request.user}")
         if 'image' not in request.FILES:
-            logger.error("Aucune image fournie")
             return Response({
                 'error': 'Aucune image fournie'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -676,7 +550,6 @@ def upload_image(request):
         image = request.FILES['image']
         extension = image.name.split('.')[-1]
         filename = f"{uuid.uuid4()}.{extension}"
-        
         path = default_storage.save(f'images/{filename}', image)
         
         logger.info(f"Image uploadée: {path}")
@@ -687,14 +560,14 @@ def upload_image(request):
         })
     
     except Exception as e:
-        logger.error(f"Erreur dans upload_image: {str(e)}")
-        return Response({
-            'error': "Erreur lors de l'upload de l'image",
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, "Erreur lors de l'upload de l'image")
+
+# ===========================================
+# ENDPOINTS STATISTIQUES
+# ===========================================
 
 @api_view(['GET'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
+@permission_classes([IsAdminUser])
 def statistiques_dashboard(request):
     """Endpoint GET /stats/ - Statistiques générales"""
     try:
@@ -719,14 +592,10 @@ def statistiques_dashboard(request):
         return Response(stats)
     
     except Exception as e:
-        logger.error(f"Erreur dans statistiques_dashboard: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des statistiques',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération des statistiques')
 
 @api_view(['GET'])
-@permission_classes([IsAdminUser])  # Restreint aux admins
+@permission_classes([IsAdminUser])
 def statistiques_seller(request, seller_id):
     """Endpoint GET /stats/seller/{seller_id}/ - Statistiques d'un vendeur"""
     try:
@@ -743,12 +612,6 @@ def statistiques_seller(request, seller_id):
         return Response(stats)
     
     except Http404:
-        return Response({
-            'error': 'Vendeur non trouvé'
-        }, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Vendeur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        logger.error(f"Erreur dans statistiques_seller: {str(e)}")
-        return Response({
-            'error': 'Erreur lors de la récupération des statistiques du vendeur',
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return handle_exception(e, 'Erreur lors de la récupération des statistiques du vendeur')

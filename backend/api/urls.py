@@ -23,7 +23,7 @@ urlpatterns = [
     path('recherche/<str:text>/', views.recherche_produits, name='recherche-produits'),
     
     # Statistiques générales
-    path('nbretotaleDeDroduitsEtDeStart/', views.nombre_total_produits, name='nombre-total'),
+    path('nbretotaleDeDroduits/', views.nombre_total_produits, name='nombre-total'),
     
     # Produits par catégorie
     path('categorie/<str:nom_categorie>/', views.produits_par_categorie, name='produits-categorie'),
