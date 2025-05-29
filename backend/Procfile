@@ -1,1 +1,2 @@
-web: gunicorn --bind 0.0.0.0:10000 backend.wsgi:application --log-file -
+export PORT=8000
+gunicorn --bind 0.0.0.0:$PORT backend.wsgi:application
