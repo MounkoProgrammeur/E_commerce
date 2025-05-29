@@ -6,3 +6,5 @@ drf-yasg==1.21.7
 django-filter==24.2
 psycopg2-binary==2.9.9 
 ortools==9.8.3296
+Pillow
+gunicorn
